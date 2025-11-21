@@ -1,15 +1,13 @@
 import os
+import io
+import base64
+
 from flask import Flask, render_template, request, jsonify
 import pandas as pd
 import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from scipy.optimize import curve_fit
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.preprocessing import OneHotEncoder, LabelEncoder
-import io
-import base64
 
 # ============================================================
 # CONFIG
@@ -21,23 +19,29 @@ app = Flask(__name__)
 # ============================================================
 # LOADING DATASET (SAFE)
 # ============================================================
-def load_dataset(path=CSV_PATH):
+def load_dataset(path: str = CSV_PATH) -> pd.DataFrame:
     df = pd.read_csv(
         path,
         dtype=str,
         engine="python",
         skip_blank_lines=False,
         keep_default_na=False,
-        na_filter=False
+        na_filter=False,
     )
 
     # bersihkan kolom
     df.columns = [c.strip() for c in df.columns]
 
     expected = [
-        "Time", "Date", "Day of the week",
-        "CarCount", "BikeCount", "BusCount", "TruckCount",
-        "Total", "Traffic Situation"
+        "Time",
+        "Date",
+        "Day of the week",
+        "CarCount",
+        "BikeCount",
+        "BusCount",
+        "TruckCount",
+        "Total",
+        "Traffic Situation",
     ]
 
     for c in expected:
@@ -46,12 +50,13 @@ def load_dataset(path=CSV_PATH):
 
     return df.reset_index(drop=True)
 
+
 df = load_dataset()
 
 # ============================================================
 # TIME PARSER
 # ============================================================
-def time_to_minutes(tstr):
+def time_to_minutes(tstr: str) -> int:
     try:
         s = str(tstr).strip()
         if not s:
@@ -61,7 +66,7 @@ def time_to_minutes(tstr):
         parts = s.split()
         if len(parts) == 2:
             timepart, ampm = parts
-            hh_mm = (timepart.split(":") + ['0', '0'])[:3]
+            hh_mm = (timepart.split(":") + ["0", "0"])[:3]
             hh = int(hh_mm[0]) if hh_mm[0].isdigit() else 0
             mm = int(hh_mm[1]) if hh_mm[1].isdigit() else 0
 
@@ -73,7 +78,7 @@ def time_to_minutes(tstr):
             return hh * 60 + mm
 
         # Jika format 24 jam "HH:MM" atau "HH"
-        hh_mm = (s.split(":") + ['0'])[:2]
+        hh_mm = (s.split(":") + ["0"])[:2]
         hh = int(hh_mm[0]) if hh_mm[0].isdigit() else 0
         mm = int(hh_mm[1]) if hh_mm[1].isdigit() else 0
         return hh * 60 + mm
@@ -81,122 +86,134 @@ def time_to_minutes(tstr):
     except Exception:
         return 0
 
+
 # ============================================================
-# FEATURE PREPARATION (memastikan encoder tersimpan)
+# FEATURE PREPARATION / CLASSIFIER TANPA SCIKIT-LEARN
 # ============================================================
-def prepare_features(df_input, fit_encoders=False):
-    """
-    Mengembalikan X (numpy array) dan encoder yang dipakai (OneHotEncoder untuk hari).
-    Jika fit_encoders=True maka day_encoder global akan di-set.
-    """
+NUM_COLS = ["CarCount", "BikeCount", "BusCount", "TruckCount", "Total"]
+
+
+def prepare_numeric(df_input: pd.DataFrame) -> pd.DataFrame:
     df_local = df_input.copy()
 
     # pastikan kolom tersedia
-    expected = [
-        "Time", "Date", "Day of the week",
-        "CarCount", "BikeCount", "BusCount", "TruckCount", "Total"
-    ]
-    for c in expected:
+    for c in ["Time", "Date", "Day of the week"] + NUM_COLS:
         if c not in df_local.columns:
             df_local[c] = ""
 
     # Time -> minutes
     df_local["Time_min"] = df_local["Time"].astype(str).apply(time_to_minutes)
 
-    # Date: bersihkan spasi, ubah "" -> "0", lalu ke numeric
+    # Date
     df_local["Date"] = df_local["Date"].astype(str).str.replace(" ", "")
     df_local["Date"] = df_local["Date"].replace("", "0")
-    df_local["Date"] = pd.to_numeric(df_local["Date"], errors="coerce").fillna(0).astype(int)
+    df_local["Date"] = pd.to_numeric(df_local["Date"], errors="coerce").fillna(0).astype(
+        int
+    )
 
-    # Numeric columns: hilangkan spasi, ubah ""->"0", numeric
-    for col in ["CarCount", "BikeCount", "BusCount", "TruckCount", "Total"]:
+    # Numeric columns
+    for col in NUM_COLS:
         df_local[col] = df_local[col].astype(str).str.replace(" ", "")
         df_local[col] = df_local[col].replace("", "0")
-        df_local[col] = pd.to_numeric(df_local[col], errors="coerce").fillna(0).astype(int)
+        df_local[col] = pd.to_numeric(df_local[col], errors="coerce").fillna(0).astype(
+            float
+        )
 
-    # Day of the week -> one-hot
-    days = df_local["Day of the week"].astype(str).replace("", "Unknown").to_numpy().reshape(-1, 1)
+    return df_local
 
-    global day_encoder
 
-    # create OneHotEncoder in a way that's compatible across sklearn versions
-    def make_encoder():
-        try:
-            return OneHotEncoder(sparse_output=False, handle_unknown="ignore")
-        except TypeError:
-            return OneHotEncoder(sparse=False, handle_unknown="ignore")
+# "Fitur" yang dipakai classifier sederhana (tanpa scikit-learn)
+FEATURE_COLS = ["Time_min", "CarCount", "BikeCount", "BusCount", "TruckCount", "Total"]
 
-    if fit_encoders or "day_encoder" not in globals():
-        enc = make_encoder()
-        day_encoded = enc.fit_transform(days)
-        day_encoder = enc  # simpan encoder global
-    else:
-        enc = day_encoder
-        try:
-            day_encoded = enc.transform(days)
-        except Exception:
-            enc = make_encoder()
-            day_encoded = enc.fit_transform(days)
-            day_encoder = enc
+# hitung centroid per kelas (Traffic Situation) di awal
+df_num = prepare_numeric(df)
+unique_classes = sorted(df_num["Traffic Situation"].astype(str).unique())
 
-    # numeric features
-    X_num = df_local[["Time_min", "Date", "CarCount", "BikeCount", "BusCount", "TruckCount", "Total"]].to_numpy()
+CLASS_CENTROIDS = {}
+for cls in unique_classes:
+    sub = df_num[df_num["Traffic Situation"].astype(str) == cls]
+    if len(sub) == 0:
+        continue
+    centroid = sub[FEATURE_COLS].to_numpy(dtype=float).mean(axis=0)
+    CLASS_CENTROIDS[cls] = centroid
 
-    # gabungkan numeric + encoded day
-    X = np.hstack([X_num, day_encoded])
 
-    return X, enc
+def classifier_predict_proba(row_dict):
+    """
+    Klasifier sederhana:
+    - ambil fitur numeric
+    - hitung jarak ke centroid tiap kelas
+    - konversi jarak menjadi "probabilitas" via softmax(-dist)
+    """
+    single_df = pd.DataFrame([row_dict])
+    single_num = prepare_numeric(single_df)
+    x = single_num[FEATURE_COLS].to_numpy(dtype=float)[0]
+
+    labels = list(CLASS_CENTROIDS.keys())
+    if not labels:
+        # fallback jika centroids kosong
+        return ["unknown"], np.array([1.0])
+
+    dists = []
+    for cls in labels:
+        c = CLASS_CENTROIDS[cls]
+        d = np.linalg.norm(x - c)
+        dists.append(d)
+
+    dists = np.array(dists, dtype=float)
+
+    # ubah jarak menjadi skor (semakin dekat semakin besar)
+    # skor = exp(-dist)
+    scores = np.exp(-dists + dists.min())
+    probs = scores / scores.sum()
+
+    return labels, probs
+
 
 # ============================================================
-# TRAIN MODEL
-# ============================================================
-label_col = "Traffic Situation"
-labels = df[label_col].astype(str).values
-
-label_encoder = LabelEncoder()
-y = label_encoder.fit_transform(labels)
-
-# prepare features and encoder (fit on full df)
-X_all, day_encoder = prepare_features(df, fit_encoders=True)
-
-# safety trim (jika ada mismatch lengths)
-n = min(len(df), len(X_all), len(y))
-df = df.iloc[:n].reset_index(drop=True)
-X_all = X_all[:n]
-y = y[:n]
-
-clf = RandomForestClassifier(n_estimators=200, random_state=42)
-clf.fit(X_all, y)
-
-# ============================================================
-# SISTEM DINAMIK
+# SISTEM DINAMIK (TANPA SCIPY)
 # ============================================================
 # convert traffic to numeric (fallback ke 0 jika gagal)
-traffic = pd.to_numeric(df["Total"].astype(str).str.replace(" ", ""), errors="coerce").fillna(0).astype(float).values
+traffic_series = (
+    df["Total"].astype(str).str.replace(" ", "", regex=False)
+    if "Total" in df.columns
+    else pd.Series([], dtype=str)
+)
+traffic = (
+    pd.to_numeric(traffic_series, errors="coerce").fillna(0).astype(float).values
+    if len(traffic_series) > 0
+    else np.array([], dtype=float)
+)
 t = np.arange(len(traffic))
 
-def sd_model(t, V0, r):
-    return V0 * np.exp(r * t)
 
-try:
-    params, _ = curve_fit(sd_model, t, traffic, p0=[traffic[0] if len(traffic) else 0, 0.0001], maxfev=20000)
-    V0_opt, r_opt = float(params[0]), float(params[1])
-except Exception:
-    # fallback: linear fit on log
+def sd_model(t_arr, V0, r):
+    return V0 * np.exp(r * t_arr)
+
+
+# estimasi parameter tanpa curve_fit: pakai regresi linier di log(traffic)
+if len(traffic) > 1:
     safe_traffic = np.maximum(traffic, 1)
-    coef = np.polyfit(t, np.log(safe_traffic), 1) if len(safe_traffic) > 1 else (0.0, np.log(safe_traffic[0]) if len(safe_traffic) else 0)
+    coef = np.polyfit(t, np.log(safe_traffic), 1)
     r_opt = float(coef[0])
     V0_opt = float(np.exp(coef[1]))
+elif len(traffic) == 1:
+    V0_opt = float(traffic[0])
+    r_opt = 0.0
+else:
+    V0_opt = 0.0
+    r_opt = 0.0
 
 t_pred = np.linspace(0, max(0, len(traffic) - 1), 400)
 traffic_pred = sd_model(t_pred, V0_opt, r_opt) if len(traffic) else np.array([])
 
 net_flow = r_opt * traffic if len(traffic) else np.array([])
 
+
 # ============================================================
-# UTIL: FIGURE -> BASE64 (BUKAN FILE STATIC)
+# UTIL: FIGURE -> BASE64
 # ============================================================
-def fig_to_base64():
+def fig_to_base64() -> str:
     buf = io.BytesIO()
     plt.savefig(buf, format="png", bbox_inches="tight")
     buf.seek(0)
@@ -204,6 +221,7 @@ def fig_to_base64():
     buf.close()
     plt.close()
     return base64.b64encode(img_bytes).decode("ascii")
+
 
 # ============================================================
 # PLOT GENERATORS (RETURN BASE64)
@@ -220,6 +238,7 @@ def generate_main_plot():
     plt.tight_layout()
     return fig_to_base64()
 
+
 def plot_volume():
     plt.figure(figsize=(7, 4))
     if len(traffic):
@@ -230,8 +249,9 @@ def plot_volume():
     plt.tight_layout()
     return fig_to_base64()
 
+
 def plot_composition():
-    numeric_cols = ["CarCount","BikeCount","BusCount","TruckCount"]
+    numeric_cols = ["CarCount", "BikeCount", "BusCount", "TruckCount"]
     for c in numeric_cols:
         if c not in df.columns:
             df[c] = 0
@@ -243,6 +263,7 @@ def plot_composition():
     plt.tight_layout()
     return fig_to_base64()
 
+
 def plot_netflow():
     plt.figure(figsize=(7, 4))
     if len(net_flow):
@@ -253,36 +274,40 @@ def plot_netflow():
     plt.tight_layout()
     return fig_to_base64()
 
-def generate_class_chart_for_label(label_str):
+
+def generate_class_chart_for_label(label_str, base_row):
     """
     Membuat grafik khusus untuk 1 kelas (Traffic Situation) dalam bentuk base64.
+    Dipakai untuk menampilkan pola pada input & centroid.
     """
-    mask = df[label_col].astype(str) == str(label_str)
-    subset = df[mask]
-
     plt.figure(figsize=(7, 4))
-    if len(subset):
-        vals = pd.to_numeric(subset["Total"].astype(str).str.replace(" ", ""), errors="coerce").fillna(0).astype(float).values
-        plt.plot(vals, linewidth=2)
-        plt.title(f"Traffic Pattern — {label_str}")
-        plt.xlabel("Index (subset)")
-        plt.ylabel("Total Vehicles")
-    else:
-        plt.text(0.5, 0.5, f"No data for {label_str}", ha="center", va="center", fontsize=12)
-        plt.title(f"Traffic Pattern — {label_str}")
-        plt.axis('off')
 
+    # series: [Car, Bike, Bus, Truck, Total]
+    x_labels = ["Car", "Bike", "Bus", "Truck", "Total"]
+    vals = [
+        base_row.get("CarCount", 0),
+        base_row.get("BikeCount", 0),
+        base_row.get("BusCount", 0),
+        base_row.get("TruckCount", 0),
+        base_row.get("Total", 0),
+    ]
+    vals = [float(str(v).strip() or 0) for v in vals]
+
+    plt.bar(x_labels, vals)
+    plt.title(f"Traffic Composition — {label_str}")
+    plt.ylabel("Count")
     plt.tight_layout()
     return fig_to_base64()
 
-def generate_probability_bar(probs):
-    labels = list(label_encoder.classes_)
+
+def generate_probability_bar(labels, probs):
     plt.figure(figsize=(6, 4))
     plt.bar(labels, probs)
     plt.ylim(0, 1)
-    plt.title("Prediction Probabilities")
+    plt.title("Prediction Probabilities (approx.)")
     plt.tight_layout()
     return fig_to_base64()
+
 
 # generate base64 charts at startup (dipakai berulang)
 MAIN_PLOT_B64 = generate_main_plot()
@@ -290,20 +315,6 @@ CHART_VOLUME_B64 = plot_volume()
 CHART_COMP_B64 = plot_composition()
 CHART_NETFLOW_B64 = plot_netflow()
 
-# ============================================================
-# HELPERS
-# ============================================================
-def row_to_dict(row: pd.Series):
-    d = {}
-    for k, v in row.items():
-        if pd.isna(v):
-            d[k] = ""
-        else:
-            try:
-                d[k] = v.item() if hasattr(v, "item") else v
-            except Exception:
-                d[k] = str(v)
-    return d
 
 # ============================================================
 # ROUTES
@@ -329,8 +340,9 @@ def home():
         chart_net_data=CHART_NETFLOW_B64,
     )
 
+
 @app.route("/get_dataset/<int:row_id>")
-def get_dataset(row_id):
+def get_dataset(row_id: int):
     if row_id < 0 or row_id >= len(df):
         return jsonify({"error": "Index not found"}), 404
     row = df.iloc[row_id]
@@ -342,9 +354,10 @@ def get_dataset(row_id):
         "BikeCount": row.get("BikeCount", ""),
         "BusCount": row.get("BusCount", ""),
         "TruckCount": row.get("TruckCount", ""),
-        "Total": row.get("Total", "")
+        "Total": row.get("Total", ""),
     }
     return jsonify(out)
+
 
 @app.route("/predict", methods=["POST"])
 def predict():
@@ -358,36 +371,22 @@ def predict():
         "BikeCount": form.get("BikeCount", "0"),
         "BusCount": form.get("BusCount", "0"),
         "TruckCount": form.get("TruckCount", "0"),
-        "Total": form.get("Total", "0")
+        "Total": form.get("Total", "0"),
     }
 
-    df_single = pd.DataFrame([single])
-    X_single, _ = prepare_features(df_single, fit_encoders=False)
+    # prediksi dengan classifier sederhana
+    labels, probs = classifier_predict_proba(single)
+    idx = int(np.argmax(probs))
+    predicted_label = labels[idx]
+    top_prob = float(probs[idx])
 
-    # safety: kalau shape mismatch, pad dengan zeros (jarang terjadi)
-    if X_single.shape[1] != X_all.shape[1]:
-        # coba rebuild day encoding dengan fit_encoders=True pada seluruh df, lalu transform single lagi
-        prepare_features(df, fit_encoders=True)
-        X_single, _ = prepare_features(df_single, fit_encoders=False)
+    prob_text = f"Probabilitas (approx.): {top_prob:.3f} (Kelas {predicted_label})"
 
-        # jika masih mismatch, pad/crop
-        if X_single.shape[1] < X_all.shape[1]:
-            pad = np.zeros((X_single.shape[0], X_all.shape[1] - X_single.shape[1]))
-            X_single = np.hstack([X_single, pad])
-        elif X_single.shape[1] > X_all.shape[1]:
-            X_single = X_single[:, :X_all.shape[1]]
-
-    pred_probs = clf.predict_proba(X_single)[0]
-    idx = int(np.argmax(pred_probs))
-    label = label_encoder.inverse_transform([idx])[0]  # original label string
-
-    prob_text = f"Probabilitas: {pred_probs[idx]:.3f} (Kelas {label})"
-
-    # generate probability bar chart (base64)
-    bar_b64 = generate_probability_bar(pred_probs)
+    # probability bar chart (base64)
+    bar_b64 = generate_probability_bar(labels, probs)
 
     # class-specific chart (base64)
-    class_b64 = generate_class_chart_for_label(label)
+    class_b64 = generate_class_chart_for_label(predicted_label, single)
 
     # kategorisasi berdasarkan Total (kuartil dari traffic historis)
     try:
@@ -409,7 +408,7 @@ def predict():
     else:
         cat, color = "Lancar", "success"
 
-    prediction_text = f"{cat} — Prediksi model: {label} (Total={total_input})"
+    prediction_text = f"{cat} — Prediksi model: {predicted_label} (Total={total_input})"
 
     return render_template(
         "index.html",
@@ -430,8 +429,9 @@ def predict():
         chart_net_data=CHART_NETFLOW_B64,
     )
 
+
 # ============================================================
-# RUN SERVER
+# RUN SERVER (untuk lokal)
 # ============================================================
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0", port=5000)
