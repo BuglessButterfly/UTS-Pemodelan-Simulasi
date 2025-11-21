@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <title>Sistem Dinamik Kemacetan Lalu Lintas</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+
+<button id="darkModeToggle" aria-pressed="false" aria-label="Toggle dark mode">🌙 Mode Gelap</button>
+
+<div class="container my-4">
+    <h2 class="text-center mb-4">Sistem Dinamik Kemacetan Lalu Lintas</h2>
+
+    <div>
+
+        <!-- PILIH DATASET -->
+        <h5 class="mt-0">Pilih Data dari Dataset</h5>
+
+        <div class="d-flex gap-2 align-items-start">
+            <select id="datasetSelector" class="form-select w-50">
+                <option value="">-- pilih baris data --</option>
+                {% for i in dataset_options %}
+                <option value="{{ i }}">Data #{{ i }}</option>
+                {% endfor %}
+            </select>
+
+            <button id="autoFillBtn" class="btn btn-success">Auto Fill Form</button>
+
+            <div id="datasetSpinner" style="display:none" class="align-self-center ms-2">
+                <div class="spinner-border spinner-border-sm"></div>
+            </div>
+        </div>
+
+        <div id="previewTable" class="mt-3" style="display:none;">
+            <h6>Preview Data:</h6>
+            <table class="table table-bordered table-sm">
+                <thead class="table-light">
+                    <tr>
+                        <th>Time</th><th>Date</th><th>Day</th><th>Car</th>
+                        <th>Bike</th><th>Bus</th><th>Truck</th><th>Total</th>
+                    </tr>
+                </thead>
+                <tbody id="previewBody" aria-live="polite"></tbody>
+            </table>
+        </div>
+
+        <hr class="my-4">
+
+        <!-- FORM INPUT -->
+        <h4>Input Parameters</h4>
+
+        <form method="POST" action="/predict" id="predictForm" novalidate>
+            {% if csrf_token %}
+            {{ csrf_token() }}
+            {% endif %}
+
+            <div class="row g-3">
+                <div class="col-md-4">
+                    <label class="form-label">Time</label>
+                    <input name="Time" type="text" class="form-control" placeholder="12:00:00 AM" required>
+                </div>
+
+                <div class="col-md-4">
+                    <label class="form-label">Date</label>
+                    <input name="Date" type="number" min="1" class="form-control" required>
+                </div>
+
+                <div class="col-md-4">
+                    <label class="form-label">Day of the Week</label>
+                    <select name="Day of the week" class="form-select" required>
+                        <option value="">-- select --</option>
+                        <option>Monday</option>
+                        <option>Tuesday</option>
+                        <option>Wednesday</option>
+                        <option>Thursday</option>
+                        <option>Friday</option>
+                        <option>Saturday</option>
+                        <option>Sunday</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="row g-3 mt-2">
+                <div class="col-md-3">
+                    <label class="form-label">CarCount</label>
+                    <input name="CarCount" type="number" min="0" class="form-control" required>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">BikeCount</label>
+                    <input name="BikeCount" type="number" min="0" class="form-control" required>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">BusCount</label>
+                    <input name="BusCount" type="number" min="0" class="form-control" required>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">TruckCount</label>
+                    <input name="TruckCount" type="number" min="0" class="form-control" required>
+                </div>
+            </div>
+
+            <div class="row g-3 mt-2">
+                <div class="col-md-3">
+                    <label class="form-label">Total</label>
+                    <input name="Total" type="number" min="0" class="form-control" required>
+                </div>
+            </div>
+
+            <div class="text-center mt-4">
+                <button class="btn btn-primary px-4" type="submit">Run Model</button>
+            </div>
+        </form>
+
+        {% if prediction_text %}
+        <div class="mt-4">
+            {{ prediction_text }}
+        </div>
+        <p class="mt-3"><b>{{ probability_text }}</b></p>
+        {% endif %}
+
+        <!-- =========================================================== -->
+        <!-- 2 grafik prediksi (TIDAK LAGI DI STATIC: BASE64 INLINE) -->
+        {% if bar_chart_data and class_chart_data %}
+        <h4 class="mt-4">Prediction Results</h4>
+
+        <div class="row mt-3">
+
+            <div class="col-md-6">
+                <div class="border p-2 rounded">
+                    <h6 class="text-center mb-2">Prediction Probabilities</h6>
+                    <img src="data:image/png;base64,{{ bar_chart_data }}" class="img-fluid rounded" alt="Prediction probabilities bar chart">
+
+                    <!-- ✨ Penjelasan -->
+                    <p class="text-muted small mt-2">
+                        Grafik ini menunjukkan distribusi probabilitas untuk setiap kelas kemacetan. Nilai tertinggi menentukan hasil prediksi.
+                    </p>
+                </div>
+            </div>
+
+            <div class="col-md-6">
+                <div class="border p-2 rounded">
+                    <h6 class="text-center mb-2">Traffic Class Visualization</h6>
+                    <img src="data:image/png;base64,{{ class_chart_data }}" class="img-fluid rounded" alt="Traffic class visualization">
+
+                    <!-- ✨ Penjelasan -->
+                    <p class="text-muted small mt-2">
+                        Visualisasi ini menampilkan representasi tingkat kemacetan berdasarkan hasil prediksi model ML.
+                    </p>
+                </div>
+            </div>
+
+        </div>
+        {% endif %}
+        <!-- =========================================================== -->
+
+        <hr>
+        <h4 class="mt-4">Traffic Analysis Charts</h4>
+
+        <div class="row g-4 mt-2">
+
+            <!-- 1 -->
+            <div class="col-md-6">
+                <div class="border p-2 rounded">
+                    <h6 class="text-center mb-2">Dynamic System Model</h6>
+                    <img src="data:image/png;base64,{{ main_plot_data }}" class="img-fluid rounded" alt="Dynamic Traffic Model">
+                    <!-- ✨ Penjelasan -->
+                    <p class="text-muted small mt-2">
+                        Model ini menggunakan fungsi eksponensial: <b>V(t) = V₀ · e^(r·t)</b> untuk memodelkan pertumbuhan volume lalu lintas.
+                        Nilai V₀ dan r diperoleh dari proses curve fitting dataset.
+                    </p>
+                </div>
+            </div>
+
+            <!-- 2 -->
+            <div class="col-md-6">
+                <div class="border p-2 rounded">
+                    <h6 class="text-center mb-2">Traffic Trend</h6>
+                    <img src="data:image/png;base64,{{ chart_volume_data }}" class="img-fluid rounded" alt="Traffic Volume Over Time">
+                    <!-- ✨ Penjelasan -->
+                    <p class="text-muted small mt-2">
+                        Grafik ini memperlihatkan perubahan volume kendaraan sepanjang waktu, sehingga dapat dilihat pola jam puncak (peak hour).
+                    </p>
+                </div>
+            </div>
+
+            <!-- 3 -->
+            <div class="col-md-6">
+                <div class="border p-2 rounded">
+                    <h6 class="text-center mb-2">Vehicle Distribution</h6>
+                    <img src="data:image/png;base64,{{ chart_comp_data }}" class="img-fluid rounded" alt="Vehicle composition chart">
+                    <!-- ✨ Penjelasan -->
+                    <p class="text-muted small mt-2">
+                        Komposisi jenis kendaraan menunjukkan peran masing-masing terhadap total volume kemacetan.
+                    </p>
+                </div>
+            </div>
+
+            <!-- 4 -->
+            <div class="col-md-6">
+                <div class="border p-2 rounded">
+                    <h6 class="text-center mb-2">Net Flow</h6>
+                    <img src="data:image/png;base64,{{ chart_net_data }}" class="img-fluid rounded" alt="Net flow chart">
+                    <!-- ✨ Penjelasan -->
+                    <p class="text-muted small mt-2">
+                        Net Flow dihitung sebagai <b>r × V(t)</b> dan menunjukkan tingkat percepatan kemacetan.
+                        Nilai besar mengindikasikan area yang menuju kondisi macet parah.
+                    </p>
+                </div>
+            </div>
+
+        </div>
+
+        <!-- ✨ Kesimpulan Simulasi -->
+        <div class="alert alert-success mt-4">
+            <b>Kesimpulan Simulasi:</b> Dari keempat grafik di atas, terlihat bahwa volume meningkat cepat pada jam tertentu,
+            komposisi kendaraan roda empat mendominasi, dan nilai Net Flow menandai titik awal terjadinya potensi kemacetan berat.
+        </div>
+
+        <hr>
+        <h4>Model Information</h4>
+        <ul>
+            <li><b>Total Data:</b> {{ total_data }}</li>
+            <li><b>V₀ (Initial Volume):</b> {{ V0 }}</li>
+            <li><b>r (Growth Rate):</b> {{ r_value }}</li>
+            <li><b>Net Flow Min:</b> {{ min_flow }}</li>
+            <li><b>Net Flow Max:</b> {{ max_flow }}</li>
+        </ul>
+
+        <!-- ✨ Penjelasan Model Sistem Dinamik -->
+        <div class="alert alert-secondary">
+            <b>Penjelasan Model:</b>  
+            Sistem dinamik ini didasarkan pada pendekatan matematis eksponensial untuk memodelkan pertumbuhan volume lalu lintas.  
+            Parameter <b>V₀</b> dan <b>r</b> diperoleh dari proses fitting dataset, sehingga model dapat menggambarkan dinamika lalu lintas nyata.
+        </div>
+
+    </div>
+</div>
+
+<script src="https://cdn.plot.ly/plot.ly-latest.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+
+    const datasetSelector = document.getElementById('datasetSelector');
+    const autoFillBtn = document.getElementById('autoFillBtn');
+    const previewTable = document.getElementById('previewTable');
+    const previewBody = document.getElementById('previewBody');
+    const datasetSpinner = document.getElementById('datasetSpinner');
+
+    function fillPreviewSafely(data) {
+        previewBody.innerHTML = '';
+        const tr = document.createElement('tr');
+        const keys = ['Time','Date','Day of the week','CarCount','BikeCount','BusCount','TruckCount','Total'];
+        keys.forEach(k => {
+            const td = document.createElement('td');
+            const val = data[k] ?? data[k.replace(/\s+/g,'_')] ?? '-';
+            td.textContent = val;
+            tr.appendChild(td);
+        });
+        previewBody.appendChild(tr);
+        previewTable.style.display = 'block';
+    }
+
+    autoFillBtn.addEventListener('click', async () => {
+        const id = datasetSelector.value;
+        if (!id) return alert("Pilih baris data terlebih dahulu!");
+
+        datasetSpinner.style.display = 'inline-block';
+        autoFillBtn.disabled = true;
+
+        try {
+            const res = await fetch(`/get_dataset/${id}`);
+            const data = await res.json();
+            if (data.error) return alert(data.error);
+
+            document.querySelector("input[name='Time']").value = data.Time;
+            document.querySelector("input[name='Date']").value = data.Date;
+            document.querySelector("select[name='Day of the week']").value = data["Day of the week"];
+            document.querySelector("input[name='CarCount']").value = data.CarCount;
+            document.querySelector("input[name='BikeCount']").value = data.BikeCount;
+            document.querySelector("input[name='BusCount']").value = data.BusCount;
+            document.querySelector("input[name='TruckCount']").value = data.TruckCount;
+            document.querySelector("input[name='Total']").value = data.Total;
+
+            fillPreviewSafely(data);
+        } finally {
+            datasetSpinner.style.display = 'none';
+            autoFillBtn.disabled = false;
+        }
+    });
+
+    /* DARK MODE */
+    const toggleBtn = document.getElementById('darkModeToggle');
+    function setDarkMode(on) {
+        document.body.classList.toggle('dark-mode', on);
+        toggleBtn.textContent = on ? '☀️ Mode Terang' : '🌙 Mode Gelap';
+        localStorage.setItem('dark-mode', on ? '1' : '0');
+    }
+    setDarkMode(localStorage.getItem('dark-mode') === '1');
+    toggleBtn.addEventListener('click', () => setDarkMode(!document.body.classList.contains('dark-mode')));
+
+});
+</script>
+
+</body>
+</html>
